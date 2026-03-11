@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Share Visual Explainer HTML via Vercel
+# Share Visual Explainer HTML via Cloudflare R2
 # Usage: ./share.sh <html-file>
-# Returns: Live URL instantly (no auth required)
+# Returns: Live URL at staging.cquenced.com
 
 set -e
 
@@ -24,59 +24,75 @@ if [ ! -f "$HTML_FILE" ]; then
     exit 1
 fi
 
-# Find vercel-deploy skill
-VERCEL_SCRIPT=""
-for dir in ~/.pi/agent/skills/vercel-deploy/scripts /mnt/skills/user/vercel-deploy/scripts; do
-    if [ -f "$dir/deploy.sh" ]; then
-        VERCEL_SCRIPT="$dir/deploy.sh"
-        break
-    fi
-done
-
-if [ -z "$VERCEL_SCRIPT" ]; then
-    echo -e "${RED}Error: vercel-deploy skill not found${NC}" >&2
-    echo "Install it with: pi install npm:vercel-deploy" >&2
+# Read R2 credentials from ~/.claude.json
+CLAUDE_JSON="$HOME/.claude.json"
+if [ ! -f "$CLAUDE_JSON" ]; then
+    echo -e "${RED}Error: ~/.claude.json not found. R2 credentials required.${NC}" >&2
     exit 1
 fi
 
-# Create temp directory with index.html
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+S3_ACCESS_KEY_ID=$(python3 -c "import json; c=json.load(open('$CLAUDE_JSON')); print(c['mcpServers']['s3']['env']['S3_ACCESS_KEY_ID'])" 2>/dev/null)
+S3_SECRET_ACCESS_KEY=$(python3 -c "import json; c=json.load(open('$CLAUDE_JSON')); print(c['mcpServers']['s3']['env']['S3_SECRET_ACCESS_KEY'])" 2>/dev/null)
 
-# Copy file as index.html (Vercel serves index.html at root)
-cp "$HTML_FILE" "$TEMP_DIR/index.html"
+if [ -z "$S3_ACCESS_KEY_ID" ] || [ -z "$S3_SECRET_ACCESS_KEY" ]; then
+    echo -e "${RED}Error: R2 credentials not found in ~/.claude.json (mcpServers.s3.env)${NC}" >&2
+    exit 1
+fi
+
+# Generate a unique key under shared-visuals/
+BASENAME=$(basename "$HTML_FILE" .html)
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+R2_KEY="shared-visuals/${BASENAME}-${TIMESTAMP}.html"
 
 echo -e "${CYAN}Sharing $(basename "$HTML_FILE")...${NC}" >&2
 
-# Deploy via vercel-deploy skill
-# Temporarily disable errexit to capture deployment errors
+# Upload to R2 via boto3
 set +e
-RESULT=$(bash "$VERCEL_SCRIPT" "$TEMP_DIR" 2>&1)
-DEPLOY_EXIT=$?
+RESULT=$(S3_ACCESS_KEY_ID="$S3_ACCESS_KEY_ID" S3_SECRET_ACCESS_KEY="$S3_SECRET_ACCESS_KEY" python3 -c "
+import boto3
+from botocore.config import Config
+import json, os
+
+s3 = boto3.client('s3',
+    endpoint_url='https://ea56583a004d44621d7583d358786a86.r2.cloudflarestorage.com',
+    aws_access_key_id=os.environ['S3_ACCESS_KEY_ID'],
+    aws_secret_access_key=os.environ['S3_SECRET_ACCESS_KEY'],
+    region_name='auto',
+    config=Config(signature_version='s3v4')
+)
+
+filepath = '$HTML_FILE'
+key = '$R2_KEY'
+
+with open(filepath, 'rb') as f:
+    s3.put_object(Bucket='cquenced-staging', Key=key, Body=f, ContentType='text/html')
+
+url = f'https://staging.cquenced.com/{key}'
+print(json.dumps({'url': url, 'key': key, 'size': os.path.getsize(filepath)}))
+" 2>&1)
+UPLOAD_EXIT=$?
 set -e
 
-if [ $DEPLOY_EXIT -ne 0 ]; then
-    echo -e "${RED}Error: Deployment failed${NC}" >&2
+if [ $UPLOAD_EXIT -ne 0 ]; then
+    echo -e "${RED}Error: Upload failed${NC}" >&2
     echo "$RESULT" >&2
     exit 1
 fi
 
-# Extract preview URL
-PREVIEW_URL=$(echo "$RESULT" | grep -oE 'https://[^"]+\.vercel\.app' | head -1)
-CLAIM_URL=$(echo "$RESULT" | grep -oE 'https://vercel\.com/claim-deployment[^"]+' | head -1)
+# Extract URL
+LIVE_URL=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['url'])" 2>/dev/null)
 
-if [ -z "$PREVIEW_URL" ]; then
-    echo -e "${RED}Error: Deployment failed${NC}" >&2
+if [ -z "$LIVE_URL" ]; then
+    echo -e "${RED}Error: Upload failed${NC}" >&2
     echo "$RESULT" >&2
     exit 1
 fi
 
 echo "" >&2
-echo -e "${GREEN}✓ Shared successfully!${NC}" >&2
+echo -e "${GREEN}Shared successfully!${NC}" >&2
 echo "" >&2
-echo -e "${GREEN}Live URL:  ${PREVIEW_URL}${NC}" >&2
-echo -e "${CYAN}Claim URL: ${CLAIM_URL}${NC}" >&2
+echo -e "${GREEN}Live URL: ${LIVE_URL}${NC}" >&2
 echo "" >&2
 
-# Output JSON for programmatic use (extract from vercel-deploy output)
-echo "$RESULT" | grep -E '^\{' | head -1
+# Output JSON for programmatic use
+echo "$RESULT"

@@ -1,6 +1,6 @@
 # Share Visual Explainer Page
 
-Share a visual explainer HTML file instantly via Vercel. Returns a live URL with no authentication required.
+Share a visual explainer HTML file instantly via Cloudflare R2. Returns a live URL with no authentication required.
 
 ## Usage
 
@@ -19,15 +19,14 @@ Share a visual explainer HTML file instantly via Vercel. Returns a live URL with
 
 ## How It Works
 
-1. Copies your HTML file to a temp directory as `index.html`
-2. Deploys via the vercel-deploy skill (no auth needed)
+1. Copies your HTML file to Cloudflare R2 (`cquenced-staging` bucket) under `shared-visuals/`
+2. File is served publicly via `staging.cquenced.com`
 3. Returns a live URL immediately
 
 ## Requirements
 
-- **vercel-deploy skill** - Should be pre-installed. If not: `pi install npm:vercel-deploy`
-
-No Vercel account, Cloudflare account, or API keys needed. The deployment is "claimable" — you can transfer it to your Vercel account later if you want.
+- **R2 credentials** in `~/.claude.json` under `mcpServers.s3.env` (S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY)
+- **boto3** Python package
 
 ## Script Location
 
@@ -40,19 +39,18 @@ bash {{skill_dir}}/scripts/share.sh <file>
 ```
 Sharing my-diagram.html...
 
-✓ Shared successfully!
+Shared successfully!
 
-Live URL:  https://skill-deploy-abc123.vercel.app
-Claim URL: https://vercel.com/claim-deployment?code=...
+Live URL: https://staging.cquenced.com/shared-visuals/my-diagram-20260311-143022.html
 ```
 
 The script also outputs JSON for programmatic use:
 ```json
-{"previewUrl":"https://...","claimUrl":"https://...","deploymentId":"...","projectId":"..."}
+{"url":"https://staging.cquenced.com/shared-visuals/my-diagram-20260311-143022.html","key":"shared-visuals/my-diagram-20260311-143022.html","size":17466}
 ```
 
 ## Notes
 
-- Deployments are **public** — anyone with the URL can view
-- Preview deployments have a configurable retention period (default: 30 days)
-- Each share creates a new deployment with a unique URL
+- Deployments are **public** -- anyone with the URL can view
+- Files persist in R2 until manually removed
+- Each share creates a unique URL with a timestamp suffix
